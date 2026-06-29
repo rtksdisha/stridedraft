@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import {
   Line,
   XAxis,
@@ -40,13 +40,13 @@ import {
 // ============================================================
 // DATE UTILITIES
 // ============================================================
-const toKey = (d) => {
+export const toKey = (d) => {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
 };
-const fromKey = (s) => {
+export const fromKey = (s) => {
   if (!s) return new Date();
   const [y, m, d] = s.split("-").map(Number);
   return new Date(y, m - 1, d);
@@ -487,7 +487,7 @@ const TEMPLATES = {
 // ============================================================
 // PROJECTION ENGINE
 // ============================================================
-function projectDaily(income, expenses, accounts, debts, blocks, startDate, endDate) {
+export function projectDaily(income, expenses, accounts, debts, blocks, startDate, endDate) {
   const incomeMap = {};
   const expenseMap = {};
   const sourceMap = {}; // date -> { label: amount, ... } for tooltips
@@ -527,13 +527,15 @@ function projectDaily(income, expenses, accounts, debts, blocks, startDate, endD
 
   // INCOME
   income.forEach((row) => {
-    const { id, amount, frequency, start } = row;
+    const { id, amount, frequency, start, end } = row;
     if (!amount || !start) return;
     let date = fromKey(start);
     const amt = parseFloat(amount);
     if (isNaN(amt)) return;
+    const endLimit = end ? fromKey(end) : null;
     let safety = 0;
     while (date <= endDate && safety < 5000) {
+      if (endLimit && date > endLimit) break;
       if (date >= startDate) {
         const finalAmt = applyIncomeModifiers(id, date, amt);
         if (finalAmt > 0) {
@@ -574,7 +576,7 @@ function projectDaily(income, expenses, accounts, debts, blocks, startDate, endD
 
   // EXPENSES
   expenses.forEach((row) => {
-    const { id, amount, due, note } = row;
+    const { id, amount, due, note, end } = row;
     const amt = parseFloat(amount);
     if (!amt || isNaN(amt)) return;
     if (note === "One-time") {
@@ -589,7 +591,9 @@ function projectDaily(income, expenses, accounts, debts, blocks, startDate, endD
     } else if (due === "Weekly") {
       let date = new Date(startDate);
       let safety = 0;
+      const endLimit = end ? fromKey(end) : null;
       while (date <= endDate && safety < 5000) {
+        if (endLimit && date > endLimit) break;
         const finalAmt = applyExpenseModifiers(id, date, amt);
         if (finalAmt > 0) {
           const k = toKey(date);
@@ -603,13 +607,16 @@ function projectDaily(income, expenses, accounts, debts, blocks, startDate, endD
       if (isNaN(dueDay)) return;
       let temp = new Date(startDate);
       let safety = 0;
+      const endLimit = end ? fromKey(end) : null;
       while (temp <= endDate && safety < 100) {
         const expenseDate = new Date(temp.getFullYear(), temp.getMonth(), dueDay);
         if (expenseDate >= startDate && expenseDate <= endDate) {
-          const finalAmt = applyExpenseModifiers(id, expenseDate, amt);
-          if (finalAmt > 0) {
-            const k = toKey(expenseDate);
-            expenseMap[k] = (expenseMap[k] || 0) + finalAmt;
+          if (!endLimit || expenseDate <= endLimit) {
+            const finalAmt = applyExpenseModifiers(id, expenseDate, amt);
+            if (finalAmt > 0) {
+              const k = toKey(expenseDate);
+              expenseMap[k] = (expenseMap[k] || 0) + finalAmt;
+            }
           }
         }
         temp.setMonth(temp.getMonth() + 1);
@@ -839,12 +846,121 @@ function SectionTitle({ kicker, children }) {
   );
 }
 
-function NumberStat({ label, value, sub, tone }) {
+function TooltipHelp({ text, children }) {
+  const [hovered, setHovered] = useState(false);
+  return (
+    <span 
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      style={{ position: "relative", display: "inline-flex", alignItems: "center", cursor: "help", gap: 4 }}
+    >
+      {children}
+      <Info size={10} style={{ opacity: 0.6 }} />
+      {hovered && (
+        <span style={{
+          position: "absolute",
+          bottom: "100%",
+          left: "50%",
+          transform: "translateX(-50%)",
+          background: paper,
+          border: `1px solid ${ink}`,
+          padding: "8px 12px",
+          fontFamily: "'JetBrains Mono', monospace",
+          fontSize: 9,
+          color: ink,
+          zIndex: 50,
+          width: 200,
+          boxShadow: "3px 3px 0 rgba(26,22,20,0.12)",
+          marginBottom: 6,
+          lineHeight: 1.4,
+          fontStyle: "normal",
+          fontWeight: "normal",
+          textTransform: "none",
+          textAlign: "left"
+        }}>
+          {text}
+        </span>
+      )}
+    </span>
+  );
+}
+
+function DatePickerCell({ value, onChange, placeholder = "YYYY-MM-DD" }) {
+  const inputRef = React.useRef(null);
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 4, width: "100%", position: "relative" }}>
+      <input
+        ref={inputRef}
+        type="text"
+        value={value ?? ""}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        style={{
+          background: "transparent",
+          border: "none",
+          borderBottom: `1px solid #c9c1b3`,
+          padding: "4px 2px",
+          fontFamily: "'JetBrains Mono', monospace",
+          fontSize: 13,
+          color: ink,
+          width: "100%",
+          outline: "none"
+        }}
+      />
+      <button
+        type="button"
+        onClick={() => {
+          try {
+            const el = document.createElement("input");
+            el.type = "date";
+            el.style.position = "absolute";
+            el.style.opacity = 0;
+            el.value = value && value.match(/^\d{4}-\d{2}-\d{2}$/) ? value : "";
+            el.onchange = (e) => {
+              onChange(e.target.value);
+              document.body.removeChild(el);
+            };
+            document.body.appendChild(el);
+            if (typeof el.showPicker === "function") {
+              el.showPicker();
+            } else {
+              el.click();
+            }
+          } catch (e) {
+            if (inputRef.current) {
+              inputRef.current.type = "date";
+              inputRef.current.focus();
+            }
+          }
+        }}
+        style={{
+          background: "transparent",
+          border: "none",
+          padding: 2,
+          cursor: "pointer",
+          color: "#7a716a",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center"
+        }}
+        title="Select date"
+      >
+        <CalIcon size={14} />
+      </button>
+    </div>
+  );
+}
+
+function NumberStat({ label, value, sub, tone, tooltipText }) {
   const color = tone === "good" ? green : tone === "bad" ? red : ink;
   return (
     <div style={{ borderTop: `1px solid ${ink}`, paddingTop: 10 }}>
       <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 9, letterSpacing: "0.18em", textTransform: "uppercase", color: "#5b544d", marginBottom: 6 }}>
-        {label}
+        {tooltipText ? (
+          <TooltipHelp text={tooltipText}>{label}</TooltipHelp>
+        ) : (
+          label
+        )}
       </div>
       <div style={{ fontFamily: "'Fraunces', Georgia, serif", fontSize: 32, fontWeight: 500, letterSpacing: "-0.02em", color, lineHeight: 1 }}>
         {value}
@@ -1569,22 +1685,79 @@ function Welcome({ onLoadSample, onStartFresh }) {
 }
 
 // ============================================================
+// LOCAL STORAGE PERSISTENCE
+// ============================================================
+export const STORAGE_KEY = "stride_state_v1";
+const CURRENT_VERSION = 1;
+
+export function getStoredState() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (parsed && parsed.version === CURRENT_VERSION) {
+      return parsed.data;
+    }
+    return null;
+  } catch (e) {
+    console.error("Failed to parse stored state:", e);
+    return null;
+  }
+}
+
+// ============================================================
 // MAIN APP
 // ============================================================
 export default function CashflowApp() {
-  const [income, setIncome] = useState([]);
-  const [expenses, setExpenses] = useState([]);
-  const [accounts, setAccounts] = useState([]);
-  const [debts, setDebts] = useState([]);
-  const [blocks, setBlocks] = useState([]);
-  const [region, setRegion] = useState("CA-ON");
-  const [horizon, setHorizon] = useState(36);
-  const [hasStarted, setHasStarted] = useState(false);
+  const [income, setIncome] = useState(() => {
+    const stored = getStoredState();
+    return stored?.income || [];
+  });
+  const [expenses, setExpenses] = useState(() => {
+    const stored = getStoredState();
+    return stored?.expenses || [];
+  });
+  const [accounts, setAccounts] = useState(() => {
+    const stored = getStoredState();
+    return stored?.accounts || [];
+  });
+  const [debts, setDebts] = useState(() => {
+    const stored = getStoredState();
+    return stored?.debts || [];
+  });
+  const [blocks, setBlocks] = useState(() => {
+    const stored = getStoredState();
+    return stored?.blocks || [];
+  });
+  const [region, setRegion] = useState(() => {
+    const stored = getStoredState();
+    return stored?.region || "CA-ON";
+  });
+  const [horizon, setHorizon] = useState(() => {
+    const stored = getStoredState();
+    return stored?.horizon || 36;
+  });
+  const [hasStarted, setHasStarted] = useState(() => {
+    const stored = getStoredState();
+    return stored?.hasStarted || false;
+  });
 
   // Side panel state
   const [panelMode, setPanelMode] = useState(null); // "template_picker" | "template_form" | "block_edit" | null
   const [activeTemplate, setActiveTemplate] = useState(null);
   const [editingBlockId, setEditingBlockId] = useState(null);
+
+  useEffect(() => {
+    if (!hasStarted) return;
+    const timer = setTimeout(() => {
+      const stateToSave = {
+        version: CURRENT_VERSION,
+        data: { income, expenses, accounts, debts, blocks, region, horizon, hasStarted }
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(stateToSave));
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [income, expenses, accounts, debts, blocks, region, horizon, hasStarted]);
 
   const startDate = useMemo(() => {
     const d = new Date(); d.setHours(0, 0, 0, 0); return d;
@@ -1624,6 +1797,60 @@ export default function CashflowApp() {
   }, [blocks, lockedBlocks, income, expenses, accounts, debts, startDate, endDate]);
 
   const months = useMemo(() => monthlySummary(rows, startingBalance), [rows, startingBalance]);
+
+  const milestones = useMemo(() => {
+    const list = [];
+    
+    // 1. Income ends
+    income.forEach((inc) => {
+      if (inc.end) {
+        const d = fromKey(inc.end);
+        if (d >= startDate && d <= endDate) {
+          list.push({
+            id: `milestone_inc_${inc.id}`,
+            date: inc.end,
+            ts: d.getTime(),
+            label: `${inc.name} Ends`,
+            color: "#e88e8e"
+          });
+        }
+      }
+    });
+
+    // 2. Expense ends
+    expenses.forEach((exp) => {
+      if (exp.end) {
+        const d = fromKey(exp.end);
+        if (d >= startDate && d <= endDate) {
+          list.push({
+            id: `milestone_exp_${exp.id}`,
+            date: exp.end,
+            ts: d.getTime(),
+            label: `${exp.name} Ends`,
+            color: "#e88e8e"
+          });
+        }
+      }
+    });
+
+    // 3. Debt payoffs
+    debtTimelines.forEach((timeline) => {
+      if (timeline.payoffDate) {
+        const d = new Date(timeline.payoffDate);
+        if (d >= startDate && d <= endDate) {
+          list.push({
+            id: `milestone_debt_${timeline.name}`,
+            date: toKey(d),
+            ts: d.getTime(),
+            label: `${timeline.name} Paid Off 🎉`,
+            color: "#8fa8e0"
+          });
+        }
+      }
+    });
+
+    return list;
+  }, [income, expenses, debtTimelines, startDate, endDate]);
 
   const chartData = useMemo(() => {
     if (!rows.length && !baseline.rows.length) return [];
@@ -1667,10 +1894,10 @@ export default function CashflowApp() {
 
   // CRUD for base data
   const updateIncome = (id, k, v) => setIncome((a) => a.map((r) => (r.id === id ? { ...r, [k]: v } : r)));
-  const addIncome = () => setIncome((a) => [...a, { id: `i_${Date.now()}`, partner: "Partner A", name: "", amount: "", frequency: "Biweekly (Friday)", start: toKey(startDate) }]);
+  const addIncome = () => setIncome((a) => [...a, { id: `i_${Date.now()}`, partner: "Partner A", name: "", amount: "", frequency: "Biweekly (Friday)", start: toKey(startDate), end: "" }]);
   const delIncome = (id) => setIncome((a) => a.filter((r) => r.id !== id));
   const updateExpense = (id, k, v) => setExpenses((a) => a.map((r) => (r.id === id ? { ...r, [k]: v } : r)));
-  const addExpense = () => setExpenses((a) => [...a, { id: `e_${Date.now()}`, name: "", amount: "", due: "1", note: "" }]);
+  const addExpense = () => setExpenses((a) => [...a, { id: `e_${Date.now()}`, name: "", amount: "", due: "1", note: "", end: "" }]);
   const delExpense = (id) => setExpenses((a) => a.filter((r) => r.id !== id));
   const updateAccount = (id, k, v) => setAccounts((a) => a.map((r) => (r.id === id ? { ...r, [k]: v } : r)));
   const addAccount = () => setAccounts((a) => [...a, { id: `a_${Date.now()}`, name: "", balance: "" }]);
@@ -1738,6 +1965,7 @@ export default function CashflowApp() {
   const resetAll = () => {
     setIncome([]); setExpenses([]); setAccounts([]); setDebts([]); setBlocks([]);
     setHasStarted(false);
+    localStorage.removeItem(STORAGE_KEY);
   };
 
   if (!hasStarted) return <Welcome onLoadSample={loadSample} onStartFresh={startFresh} />;
@@ -1818,24 +2046,32 @@ export default function CashflowApp() {
         {hasEnoughToProject && (
           <>
             <section style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 32, marginBottom: 40 }}>
-              <NumberStat label="Starting Balance" value={fmtMoney(startingBalance)} sub={`across ${accounts.length} account${accounts.length === 1 ? "" : "s"}`} />
+              <NumberStat 
+                label="Starting Balance" 
+                value={fmtMoney(startingBalance)} 
+                sub={`across ${accounts.length} account${accounts.length === 1 ? "" : "s"}`} 
+                tooltipText="The sum of all your starting balances. This is where your financial projection begins today." 
+              />
               <NumberStat
                 label={`Ending · ${fmtMonth(toKey(endDate).slice(0, 7))}`}
                 value={fmtMoney(stats.endBal)}
                 tone={stats.endBal >= startingBalance ? "good" : "bad"}
                 sub={stats.endBal >= startingBalance ? `+${fmtMoney(stats.endBal - startingBalance)} net` : `${fmtMoney(stats.endBal - startingBalance)} net`}
+                tooltipText="Your projected total balance at the end of the horizon, representing your final net wealth."
               />
               <NumberStat
                 label="Avg Monthly In · Out"
                 value={fmtMoney(stats.monthlyIn - stats.monthlyOut)}
                 tone={stats.monthlyIn - stats.monthlyOut >= 0 ? "good" : "bad"}
                 sub={`${fmtMoney(stats.monthlyIn)} − ${fmtMoney(stats.monthlyOut)}`}
+                tooltipText="Your average monthly income minus your average monthly expenses (including interest and debt minimum payments) over the horizon."
               />
               <NumberStat
                 label="Lowest Projected"
                 value={fmtMoney(stats.lowBal)}
                 tone={stats.lowBal < 0 ? "bad" : stats.lowBal < 1000 ? undefined : "good"}
                 sub={stats.lowBal < 0 ? "WARNING: goes negative" : "Stays above zero"}
+                tooltipText="The lowest balance your accounts are projected to reach. If this falls below $0, your plan is 'underwater' (negative balance). If it stays above $0 but below $1,000, your plan is considered 'tight'."
               />
             </section>
 
@@ -1858,13 +2094,17 @@ export default function CashflowApp() {
 
                 {blocks.some((b) => b.active && !b.locked) && (
                   <div style={{ display: "flex", gap: 18, alignItems: "center", marginBottom: 14, fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: "#5b544d", letterSpacing: "0.04em" }}>
-                    <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                      <span style={{ width: 18, height: 2, background: ink }} /> With what-ifs
-                    </span>
-                    <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                      <span style={{ width: 18, height: 1, background: "#7a716a", borderTop: "1px dashed #7a716a" }} />
-                      {lockedBlocks.length > 0 ? "Committed plan" : "Baseline"}
-                    </span>
+                    <TooltipHelp text="Your projection incorporating all active (unlocked) scenarios/what-ifs.">
+                      <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <span style={{ width: 18, height: 2, background: ink }} /> With what-ifs
+                      </span>
+                    </TooltipHelp>
+                    <TooltipHelp text="Your baseline projection containing only base cashflow and committed (locked) scenarios.">
+                      <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <span style={{ width: 18, height: 1, background: "#7a716a", borderTop: "1px dashed #7a716a" }} />
+                        {lockedBlocks.length > 0 ? "Committed plan" : "Baseline"}
+                      </span>
+                    </TooltipHelp>
                   </div>
                 )}
 
@@ -1889,6 +2129,22 @@ export default function CashflowApp() {
                       <YAxis tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`} tick={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, fill: "#5b544d" }} stroke={ink} tickLine={false} width={56} />
                       <Tooltip content={<CustomTooltip />} cursor={{ stroke: ink, strokeDasharray: "3 3" }} />
                       <ReferenceLine y={0} stroke={red} strokeDasharray="4 4" />
+                      {milestones.map((m) => (
+                        <ReferenceLine
+                          key={m.id}
+                          x={m.ts}
+                          stroke={m.color}
+                          strokeWidth={1}
+                          strokeDasharray="3 3"
+                          label={{
+                            value: m.label,
+                            position: "top",
+                            fill: "#7a716a",
+                            fontFamily: "'JetBrains Mono', monospace",
+                            fontSize: 9
+                          }}
+                        />
+                      ))}
                       <Area type="monotone" dataKey="balance" stroke="none" fill="url(#balFill)" isAnimationActive={false} />
                       {blocks.some((b) => b.active) && (
                         <Line type="monotone" dataKey="baseline" stroke="#7a716a" strokeWidth={1.25} strokeDasharray="4 4" dot={false} isAnimationActive={false} />
@@ -1977,11 +2233,12 @@ export default function CashflowApp() {
               <table style={{ width: "100%", borderCollapse: "collapse" }}>
                 <thead>
                   <tr style={{ borderBottom: `1px solid ${ink}` }}>
-                    <th style={{ ...COL_STYLE, width: "20%" }}>Partner</th>
-                    <th style={{ ...COL_STYLE, width: "26%" }}>Source</th>
-                    <th style={{ ...COL_STYLE, width: "16%" }}>Amount</th>
-                    <th style={{ ...COL_STYLE, width: "26%" }}>Frequency</th>
-                    <th style={{ ...COL_STYLE, width: "14%" }}>Start</th>
+                    <th style={{ ...COL_STYLE, width: "16%" }}>Partner</th>
+                    <th style={{ ...COL_STYLE, width: "22%" }}>Source</th>
+                    <th style={{ ...COL_STYLE, width: "14%" }}>Amount</th>
+                    <th style={{ ...COL_STYLE, width: "22%" }}>Frequency</th>
+                    <th style={{ ...COL_STYLE, width: "13%" }}>Start</th>
+                    <th style={{ ...COL_STYLE, width: "13%" }}>End</th>
                     <th style={{ ...COL_STYLE, width: "20px" }}></th>
                   </tr>
                 </thead>
@@ -1992,7 +2249,8 @@ export default function CashflowApp() {
                       <td style={tdStyle}><InputCell value={r.name} onChange={(v) => updateIncome(r.id, "name", v)} placeholder="Salary" /></td>
                       <td style={tdStyle}><InputCell type="number" value={r.amount} onChange={(v) => updateIncome(r.id, "amount", v)} placeholder="0" /></td>
                       <td style={tdStyle}><Select value={r.frequency} onChange={(v) => updateIncome(r.id, "frequency", v)} options={FREQS} /></td>
-                      <td style={tdStyle}><InputCell value={r.start} onChange={(v) => updateIncome(r.id, "start", v)} placeholder="YYYY-MM-DD" /></td>
+                      <td style={tdStyle}><DatePickerCell value={r.start} onChange={(v) => updateIncome(r.id, "start", v)} /></td>
+                      <td style={tdStyle}><DatePickerCell value={r.end || ""} onChange={(v) => updateIncome(r.id, "end", v)} placeholder="Ongoing" /></td>
                       <td style={tdStyle}><IconBtn onClick={() => delIncome(r.id)} title="Remove"><Trash2 size={14} /></IconBtn></td>
                     </tr>
                   ))}
@@ -2014,10 +2272,11 @@ export default function CashflowApp() {
               <table style={{ width: "100%", borderCollapse: "collapse" }}>
                 <thead>
                   <tr style={{ borderBottom: `1px solid ${ink}` }}>
-                    <th style={{ ...COL_STYLE, width: "34%" }}>Name</th>
-                    <th style={{ ...COL_STYLE, width: "20%" }}>Amount</th>
-                    <th style={{ ...COL_STYLE, width: "22%" }}>Due</th>
-                    <th style={{ ...COL_STYLE, width: "18%" }}>Note</th>
+                    <th style={{ ...COL_STYLE, width: "26%" }}>Name</th>
+                    <th style={{ ...COL_STYLE, width: "16%" }}>Amount</th>
+                    <th style={{ ...COL_STYLE, width: "20%" }}>Due</th>
+                    <th style={{ ...COL_STYLE, width: "16%" }}>Note</th>
+                    <th style={{ ...COL_STYLE, width: "22%" }}>End</th>
                     <th style={{ ...COL_STYLE, width: "20px" }}></th>
                   </tr>
                 </thead>
@@ -2026,9 +2285,20 @@ export default function CashflowApp() {
                     <tr key={r.id} style={{ borderBottom: `1px solid #e8e0d1` }}>
                       <td style={tdStyle}><InputCell value={r.name} onChange={(v) => updateExpense(r.id, "name", v)} placeholder="Rent" /></td>
                       <td style={tdStyle}><InputCell type="number" value={r.amount} onChange={(v) => updateExpense(r.id, "amount", v)} placeholder="0" /></td>
-                      <td style={tdStyle}><InputCell value={r.due} onChange={(v) => updateExpense(r.id, "due", v)} placeholder="1, Weekly, or date" /></td>
+                      <td style={tdStyle}>
+                        {r.note === "One-time" ? (
+                          <DatePickerCell value={r.due} onChange={(v) => updateExpense(r.id, "due", v)} />
+                        ) : (
+                          <InputCell value={r.due} onChange={(v) => updateExpense(r.id, "due", v)} placeholder="1 or Weekly" />
+                        )}
+                      </td>
                       <td style={tdStyle}>
                         <Select value={r.note || "Recurring"} onChange={(v) => updateExpense(r.id, "note", v === "Recurring" ? "" : v)} options={["Recurring", "One-time"]} />
+                      </td>
+                      <td style={tdStyle}>
+                        {r.note !== "One-time" && (
+                          <DatePickerCell value={r.end || ""} onChange={(v) => updateExpense(r.id, "end", v)} placeholder="Ongoing" />
+                        )}
                       </td>
                       <td style={tdStyle}><IconBtn onClick={() => delExpense(r.id)} title="Remove"><Trash2 size={14} /></IconBtn></td>
                     </tr>
